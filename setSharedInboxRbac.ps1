@@ -38,3 +38,9 @@ New-ManagementRoleAssignment `
     -App $AppId `
     -Role "Application Mail.Read" `
     -CustomResourceScope $NewMgmtScope
+
+concat(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(triggerOutputs()?['body/subject'], '&', 'and'), '#', ''), '%', ''), '?', ''), '<', ''), '>', ''), ':', '-'), '"', ''), '/', '-'), '\', '-'), '|', '-'), '*', ''), ' - ', utcNow('yyyyMMdd-HHmmss'), '.eml')
+
+concat(utcNow('yyyy-MM-dd_HHmmss'), '_', guid(), '.eml')
+
+concat(utcNow('yyyyMMdd-HHmmss'), '.eml')
