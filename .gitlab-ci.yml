@@ -1,0 +1,41 @@
+# =====================================================================
+# SharePoint → GitLab file sync pipeline
+# ---------------------------------------------------------------------
+# Secrets/per-environment values live in Settings > CI/CD > Variables.
+# Composed values are defined here. Both rely on GitLab's
+# "Expand variable reference" property (enabled by default) so that
+# tokens like $TENANT_ID and $SITE_PATH are substituted at job runtime.
+# =====================================================================
+
+stages:
+  - sync
+
+variables:
+  # ---- Plain config (no expansion needed) ----
+  TARGET_FOLDER: "FooBar"
+  GITLAB_TARGET_DIR: "Sharepoint_Imports"
+
+  # ---- Variables that REFERENCE other variables ----
+  # These require "Expand variable reference" to be ON (default).
+  # GitLab predefined vars: https://docs.gitlab.com/ci/variables/predefined_variables/
+  BRANCH: "$CI_DEFAULT_BRANCH"
+  GITLAB_API: "https://gitlab.com/api/v4"
+  PROJECT_ID: "$GitlabProjectId"
+
+  # Composed Graph URLs — $TENANT_ID and $SITE_PATH come from
+  # CI/CD variables defined in the UI. Because reference expansion
+  # is enabled, the final URL is resolved before the script runs.
+  GRAPH_TOKEN_URL: "https://login.microsoftonline.com/$AzureAppTentantName/oauth2/v2.0/token"
+  GRAPH_DRIVE_URL: "https://graph.microsoft.com/v1.0/sites/$SharepointSitePath:/drive"
+
+sharepoint-sync:
+  stage: sync
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache bash curl jq coreutils pandoc
+  script:
+    - bash sharepoint-sync.sh
+  rules:
+    # Run on schedule (recommended) or manual web trigger
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
