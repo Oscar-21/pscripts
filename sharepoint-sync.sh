@@ -109,8 +109,48 @@ fi
 # --- 3. Get Folder Contents ---
 echo "Fetching contents of SharePoint folder: $TARGET_FOLDER..."
 CHILDREN_ENDPOINT="https://graph.microsoft.com/v1.0/drives/$DRIVE_ID/root:/$TARGET_FOLDER:/children"
+
+##### New
+# Capture body and HTTP status separately
+HTTP_CODE=$(curl -sS -X GET "$CHILDREN_ENDPOINT" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Accept: application/json" \
+    -o /tmp/children.json \
+    -w "%{http_code}")
+
+CURL_EXIT=$?
+
+# 1. Did curl itself fail (DNS, TLS, connection refused, etc.)?
+if [[ $CURL_EXIT -ne 0 ]]; then
+    echo "ERROR: curl failed with exit code $CURL_EXIT calling $CHILDREN_ENDPOINT" >&2
+    exit 1
+fi
+
+# 2. Did the server return a non-2xx status?
+if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+    echo "ERROR: Graph returned HTTP $HTTP_CODE for $CHILDREN_ENDPOINT" >&2
+    # Graph error bodies are JSON like {"error":{"code":"...","message":"..."}}
+    jq -r '.error | "  code:    \(.code)\n  message: \(.message)"' /tmp/children.json 2>/dev/null \
+        || cat /tmp/children.json >&2
+    exit 1
+fi
+
+CHILDREN_RESPONSE=$(cat /tmp/children.json)
+rm -f /tmp/children.json
+
+# 3. Sanity check that the body has the shape we expect
+if ! echo "$CHILDREN_RESPONSE" | jq -e 'has("value")' >/dev/null; then
+    echo "ERROR: response missing '.value' array" >&2
+    echo "$CHILDREN_RESPONSE" >&2
+    exit 1
+fi
+
+##### New
+
+### Old
 CHILDREN_RESPONSE=$(curl -s -X GET "$CHILDREN_ENDPOINT" \
     -H "Authorization: Bearer $ACCESS_TOKEN")
+### Old
 echo "---------------------------------------------------"
 
 # --- 4. Loop and commit every file to GitLab ---
