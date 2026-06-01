@@ -32,7 +32,7 @@ sharepoint-sync:
   stage: sync
   image: alpine:3.19
   before_script:
-    - apk add --no-cache bash curl jq coreutils pandoc
+    - apk add --no-cache bash curl jq coreutils pandoc openssl util-linux xxd
   script:
     - bash sharepoint-sync.sh
   rules:
