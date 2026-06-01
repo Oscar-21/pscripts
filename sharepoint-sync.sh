@@ -8,7 +8,7 @@
 #
 # Required (set in Settings > CI/CD > Variables — mask + protect secrets,
 # leave "Expand variable reference" enabled):
-#   AzureAppTentantName       Entra tenant ID
+#   AzureAppTentantName       Entra tenant ID# 0.
 #   AzureAppClientId       App registration client ID
 #   AzureAppClientSecret   App registration secret    (masked, protected)
 #   SharepointSitePath       e.g. contoso.sharepoint.com:/sites/MySite
@@ -29,15 +29,66 @@ set -euo pipefail
 : "${AzureAppClientSecret:?Missing AzureAppClientSecret}"
 : "${SharepointSitePath:?Missing SharepointSitePath}"
 : "${GitlabToken:?Missing GitlabToken}"
+: "${AzureCertPFX:?Missing AzureCertPFX}"
+: "${AzureCertPFXPassword:?Missing AzureCertPFXPassword}"
+
+# 0.
+
+TENANT_ID="${AzureAppTentantName}"
+CLIENT_ID="${AzureAppClientId}"
+
+AUTHORITY="https://login.microsoftonline.com"   # was login.microsoftonline.us
+GRAPH_HOST="https://graph.microsoft.com"        # was graph.microsoft.us
+SCOPE="${GRAPH_HOST}/.default"                  # resolves to https://graph.microsoft.com/.default
+
+
+# ===== Helper: base64url (no padding) =====
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+cat "$AzureCertPFX" | base64 -d > cert.pfx
+openssl pkcs12 -in cert.pfx -clcerts -nokeys -passin "pass:$AzureCertPFXPassword" -out cert.pem
+openssl pkcs12 -in cert.pfx -nocerts -nodes  -passin "pass:$AzureCertPFXPassword" -out key.pem
+
+CERT_FILE="./cert.pem"   # or "$GRAPH_CERT" in CI
+KEY_FILE="./key.pem"    # or "$GRAPH_KEY"  in CI
+
+
+# SHA1 thumbprint of the cert, raw bytes, base64url-encoded -> x5t header value
+THUMBPRINT_B64URL=$(openssl x509 -in "$CERT_FILE" -fingerprint -sha1 -noout \
+  | sed 's/^.*=//; s/://g' \
+  | xxd -r -p \
+  | b64url)
+
+
+NOW=$(date +%s)
+EXP=$((NOW + 600))   # 10-minute lifetime; max allowed is 24h
+JTI=$(uuidgen)
+
+HEADER=$(printf '{"alg":"RS256","typ":"JWT","x5t":"%s"}' "$THUMBPRINT_B64URL")
+PAYLOAD=$(printf '{"aud":"%s/%s/oauth2/v2.0/token","iss":"%s","sub":"%s","jti":"%s","nbf":%d,"exp":%d}' \
+  "$AUTHORITY" "$TENANT_ID" "$CLIENT_ID" "$CLIENT_ID" "$JTI" "$NOW" "$EXP")
+
+HEADER_B64=$(printf '%s' "$HEADER"  | b64url)
+PAYLOAD_B64=$(printf '%s' "$PAYLOAD" | b64url)
+
+SIGNING_INPUT="${HEADER_B64}.${PAYLOAD_B64}"
+SIGNATURE=$(printf '%s' "$SIGNING_INPUT" \
+  | openssl dgst -sha256 -sign "$KEY_FILE" \
+  | b64url)
+
+CLIENT_ASSERTION="${SIGNING_INPUT}.${SIGNATURE}"
+
 
 # --- 1. Auth with Microsoft Graph ---
 echo "Authenticating with Microsoft Graph..."
-TOKEN_RESPONSE=$(curl -s -X POST "$GRAPH_TOKEN_URL" \
+TOKEN_RESPONSE=$(curl -sS -X POST \
+  "${AUTHORITY}/${TENANT_ID}/oauth2/v2.0/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "client_id=$AzureAppClientId" \
-  -d "client_secret=$AzureAppClientSecret" \
-  -d "scope=https://graph.microsoft.com/.default" \
-  -d "grant_type=client_credentials")
+  --data-urlencode "client_id=$AzureAppClientId" \
+  --data-urlencode "scope=${SCOPE}" \
+  --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+  --data-urlencode "client_assertion=${CLIENT_ASSERTION}" \
+  --data-urlencode "grant_type=client_credentials")
 
 ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token')
 if [ "$ACCESS_TOKEN" = "null" ] || [ -z "$ACCESS_TOKEN" ]; then
