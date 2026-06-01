@@ -1,4 +1,9 @@
 #!/bin/bash
+
+echo "--- Failing call (children) ---"
+curl -v -o /dev/null \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$CHILDREN_ENDPOINT" 2>&1 | grep -E '^(\*|<|>)' | head -25
 # ---------------------------------------------------------------------
 # sharepoint-sync.sh
 # Pulls files from a SharePoint folder via Microsoft Graph and commits
