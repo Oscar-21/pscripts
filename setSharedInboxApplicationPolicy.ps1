@@ -60,65 +60,63 @@ set -e
 GITLAB_API_URL="https://gitlab.com/api/v4" # Change if using self-hosted GitLab
 PROJECT_ID="12345678"                      # Your project ID
 TOKEN="your_access_token"                  # Your project access token
-SOURCE_BRANCH="main"
-SOURCE_FOLDER="path/to/source/folder"      # The folder you want to download
-ISSUE_TITLE="Automated Folder Extraction: $SOURCE_FOLDER"
+TARGET_BRANCH="feature/expected-branch"    # The branch you want to check for
 
-# --- 2. DOWNLOAD THE FOLDER ---
-echo "Downloading '$SOURCE_FOLDER' from '$SOURCE_BRANCH'..."
+# --- 2. CHECK IF THE BRANCH EXISTS ---
+echo "Checking if branch '$TARGET_BRANCH' exists..."
 
-# Download the specific folder as a tar.gz archive
-curl --silent --show-error --fail --header "PRIVATE-TOKEN: $TOKEN" \
-  "${GITLAB_API_URL}/projects/${PROJECT_ID}/repository/archive.tar.gz?sha=${SOURCE_BRANCH}&path=${SOURCE_FOLDER}" \
-  --output archive.tar.gz
+# URL-encode the branch name (safely converts '/' to '%2F' for the API path)
+ENCODED_BRANCH="${TARGET_BRANCH//\//%2F}"
 
-# --- 3. UPLOAD THE ARCHIVE TO GITLAB ---
-echo "Uploading archive to project..."
-
-# The Uploads API accepts multipart/form-data. 
-# It responds with a JSON object containing a pre-formatted 'markdown' string.
-UPLOAD_RESPONSE=$(curl --silent --show-error --fail --request POST \
+# Fetch ONLY the HTTP status code from the branch endpoint
+HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
   --header "PRIVATE-TOKEN: $TOKEN" \
-  --form "file=@archive.tar.gz" \
-  "${GITLAB_API_URL}/projects/${PROJECT_ID}/uploads")
+  "${GITLAB_API_URL}/projects/${PROJECT_ID}/repository/branches/${ENCODED_BRANCH}")
 
-# Extract the markdown string (e.g., "[archive.tar.gz](/uploads/12345/archive.tar.gz)")
-MARKDOWN_LINK=$(echo "$UPLOAD_RESPONSE" | jq -r '.markdown')
+# --- 3. CONDITIONAL LOGIC ---
+if [ "$HTTP_STATUS" -eq 200 ]; then
+  echo "✅ Branch '$TARGET_BRANCH' exists. Proceeding with normal operations..."
+  # You can add the rest of your folder download/commit logic here if needed.
+  
+elif [ "$HTTP_STATUS" -eq 404 ]; then
+  echo "❌ Branch '$TARGET_BRANCH' does NOT exist. Creating an issue to report this..."
+  
+  # Draft the issue title and description
+  ISSUE_TITLE="Action Required: Missing Branch '$TARGET_BRANCH'"
+  ISSUE_DESCRIPTION="An automated pipeline attempted to interact with the branch \`${TARGET_BRANCH}\`, but it could not be found in the repository. 
 
-# --- 4. CREATE THE ISSUE WITH THE ATTACHMENT ---
-echo "Creating issue..."
+Please verify if the branch was deleted or renamed."
 
-# Draft the issue description, injecting the markdown link we just generated
-ISSUE_DESCRIPTION="An automated process has packaged the \`${SOURCE_FOLDER}\` folder from the \`${SOURCE_BRANCH}\` branch.
+  # Build the JSON payload safely using jq
+  PAYLOAD=$(jq --null-input \
+    --arg title "$ISSUE_TITLE" \
+    --arg desc "$ISSUE_DESCRIPTION" \
+    '{
+      "title": $title,
+      "description": $desc,
+      "labels": "automated, missing-branch, pipeline-alert"
+    }')
 
-**Download the archive here:** ${MARKDOWN_LINK}
+  # Send the POST request to the Issues API
+  ISSUE_RESPONSE=$(curl --silent --show-error --fail --request POST \
+    --header "PRIVATE-TOKEN: $TOKEN" \
+    --header "Content-Type: application/json" \
+    --data "$PAYLOAD" \
+    "${GITLAB_API_URL}/projects/${PROJECT_ID}/issues")
 
-_This issue was generated automatically by a script._"
-
-# Build the JSON payload safely using jq to prevent quotes/newlines from breaking the JSON
-PAYLOAD=$(jq --null-input \
-  --arg title "$ISSUE_TITLE" \
-  --arg desc "$ISSUE_DESCRIPTION" \
-  '{
-    "title": $title,
-    "description": $desc,
-    "labels": "automated, archive"
-  }')
-
-# Send the POST request to the Issues API
-ISSUE_RESPONSE=$(curl --silent --show-error --fail --request POST \
-  --header "PRIVATE-TOKEN: $TOKEN" \
-  --header "Content-Type: application/json" \
-  --data "$PAYLOAD" \
-  "${GITLAB_API_URL}/projects/${PROJECT_ID}/issues")
-
-# Extract the web URL of the new issue so we can print it to the terminal
-ISSUE_URL=$(echo "$ISSUE_RESPONSE" | jq -r '.web_url')
-
-echo "Success! Issue created with the attached folder."
-echo "View it here: $ISSUE_URL"
-
-# Cleanup
-rm archive.tar.gz
+  # Extract the web URL of the new issue
+  ISSUE_URL=$(echo "$ISSUE_RESPONSE" | jq -r '.web_url')
+  
+  echo "Success! Alert issue created."
+  echo "View it here: $ISSUE_URL"
+  
+  # Optional: Exit with an error code to fail the CI/CD job since the required branch is missing
+  # exit 1
+  
+else
+  # Catch-all for API outages, bad tokens (401), or bad requests (400)
+  echo "⚠️ Failed to check branch status. GitLab API returned HTTP $HTTP_STATUS."
+  exit 1
+fi
 
 ### NEW
