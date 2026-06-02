@@ -22,11 +22,33 @@ curl --silent --show-error --fail --header "PRIVATE-TOKEN: $TOKEN" \
 mkdir -p extracted_files
 tar -xzf archive.tar.gz -C extracted_files --strip-components=1
 
-# --- 3. CREATE THE NEW BRANCH ---
-echo "Creating new branch: $NEW_BRANCH..."
-# If the branch already exists, this curl will fail (unless you handle the 400 response).
-curl --silent --show-error --fail --request POST --header "PRIVATE-TOKEN: $TOKEN" \
-  "${GITLAB_API_URL}/projects/${PROJECT_ID}/repository/branches?branch=${NEW_BRANCH}&ref=${SOURCE_BRANCH}" > /dev/null
+
+# --- 3. CHECK AND CREATE THE NEW BRANCH ---
+echo "Checking if branch '$NEW_BRANCH' exists..."
+
+# GitLab API requires branch names with slashes (e.g., feature/upload) to be URL-encoded.
+# This pure bash string manipulation replaces all '/' with '%2F'.
+ENCODED_BRANCH="${NEW_BRANCH//\//%2F}"
+
+# Check the branch endpoint and capture ONLY the HTTP status code
+HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+  --header "PRIVATE-TOKEN: $TOKEN" \
+  "${GITLAB_API_URL}/projects/${PROJECT_ID}/repository/branches/${ENCODED_BRANCH}")
+
+if [ "$HTTP_STATUS" -eq 200 ]; then
+  echo "Branch '$NEW_BRANCH' already exists. We will commit to the existing branch."
+  
+elif [ "$HTTP_STATUS" -eq 404 ]; then
+  echo "Branch '$NEW_BRANCH' does not exist. Creating it from '$SOURCE_BRANCH'..."
+  
+  curl --silent --show-error --fail --request POST --header "PRIVATE-TOKEN: $TOKEN" \
+    "${GITLAB_API_URL}/projects/${PROJECT_ID}/repository/branches?branch=${NEW_BRANCH}&ref=${SOURCE_BRANCH}" > /dev/null
+    
+else
+  echo "Failed to check branch status. GitLab API returned HTTP $HTTP_STATUS."
+  exit 1
+fi
+
 
 # --- 4. PREPARE THE COMMIT PAYLOAD USING JQ ---
 echo "Preparing commit payload..."
